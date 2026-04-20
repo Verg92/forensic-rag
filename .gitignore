@@ -1,0 +1,8 @@
+.venv/
+data/raw_audio/
+data/raw_docs/
+data/transcripts/
+models/
+indexes/
+.env
+__pycache__/
