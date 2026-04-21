@@ -1,0 +1,33 @@
+services:
+  whisper:
+    build:
+      context: .
+      dockerfile: docker/whisper/Dockerfile
+      args:
+        GPU_BACKEND: ${GPU_BACKEND:-rocm}
+    image: forensic-rag/whisper:${GPU_BACKEND:-rocm}
+
+    # Accesso GPU AMD
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "44"
+      - "992"
+
+    environment:
+      # ROCm — ignorati silenziosamente se GPU_BACKEND=cuda
+      HIP_VISIBLE_DEVICES: ""
+      ROCR_VISIBLE_DEVICES: ""
+      #HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+      # HuggingFace token — non hardcodare mai, sempre da .env
+      HF_TOKEN: ${HF_TOKEN}
+
+    volumes:
+      - ./data:/data
+      - ./models/hf_cache:/app/model_cache   # cache modelli persistente
+      - ./src/transcription:/app/transcription  # hot-reload: modifiche Python senza rebuild
+
+    # Non avvia nulla da solo — invocato con docker compose run
+    profiles:
+      - tools
