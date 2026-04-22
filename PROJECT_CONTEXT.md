@@ -19,39 +19,38 @@ Volume previsto: ~20 ore/mese di audio da trascrivere, studio singolo.
 - **Zona Gialla** (locale → cloud solo dopo anonimizzazione seria): pattern astratti, query verso corpus pubblico, prompt di sintesi complessa
 - **Zona Verde** (cloud libero): corpus legale pubblico, modelli pre-addestrati, ricerche web giuridiche
 
-**Tutto in Docker, niente installazioni native.** Host ha solo driver GPU. Stack applicativo tutto in container. Questo abilita migrazione facile AMD → NVIDIA futura.
+**Tutto in Docker, niente installazioni native.** Host ha solo driver GPU. Stack applicativo tutto in container. Questo abilita migrazione facile tra macchine/GPU.
 
-**Doppio backend GPU fin dall'inizio.** Dockerfile parametrizzati con `ARG GPU_BACKEND=rocm|cuda`. `.env` con config GPU-dipendente separata dal codice. Migrazione futura a NVIDIA = cambio variabile + rebuild, non riscrittura.
+**Backend GPU: solo CUDA.** Dockerfile con `ARG GPU_BACKEND=rocm|cuda`, ma il branch `rocm` non è testato e l'immagine ROCm è stata eliminata. Si usa esclusivamente il branch `cuda`. La RX 9060 XT (gfx1200) non è supportata da ROCm, quindi abbandonata.
 
 **Compliance.** Dati di natura penale = art. 10 GDPR + D.Lgs. 51/2018. Segreto professionale avvocato. AI Act EU come framework. Nessun transito su server USA non controllati. Scelta strumenti come Plaud rigettata per questo motivo (server USA, LLM di terzi nella pipeline).
 
 ## Hardware attuale (prototipo)
 
-- **CPU:** AMD Ryzen 7 7700 (8C/16T, Zen 4)
-- **GPU:** AMD Radeon RX 9060 XT 16GB VRAM (gfx1200, RDNA 4) — Device 0 in ROCm
-- **iGPU:** AMD Ryzen integrated (gfx1036) — Device 1, ignorata (usare `HIP_VISIBLE_DEVICES=0`)
-- **OS:** Ubuntu 24.04 LTS (dual boot su SSD dedicato)
-- **Kernel:** 6.8+
-- **Motherboard:** Gigabyte B650M AORUS ELITE AX ICE
+- **OS:** Windows con WSL2 (Ubuntu, kernel 6.6.87.2-microsoft-standard-WSL2)
+- **GPU:** NVIDIA GTX 1050 — CUDA funzionante via WSL2 NVIDIA passthrough
+- **Docker:** Docker Desktop su Windows, accessibile da WSL2
+
+**Perché siamo qui:** Il piano originale era AMD RX 9060 XT (RDNA4, gfx1200) + ROCm su Ubuntu dual boot. Abbandonato perché ROCm non supporta ancora gfx1200 → fallback sempre su CPU → inutilizzabile. Migrazione a macchina Windows + GTX 1050 CUDA che funziona.
 
 ## Hardware futuro (produzione)
 
 Opzione ibrida concordata:
 - PC locale modesto in studio per task continuativi (WhisperX, embedder, LLM piccolo) — budget ~4.000€
 - Cloud GPU EU on-demand per task pesanti su dato anonimizzato (Scaleway L40S o simile) — ~50-200€/mese stimati
-- **Probabile GPU futura: NVIDIA**, quindi architettura già predisposta per migrazione CUDA
+- **GPU futura: NVIDIA** (architettura già predisposta per CUDA)
 
 ## Stack tecnico deciso
 
-| Livello | Componente | Scelta |
-|---|---|---|
-| OS | Ubuntu 24.04 LTS | ✅ installato |
-| Driver GPU | ROCm 7.2.2 (no-dkms, kernel mainline) | ✅ installato |
-| Container | Docker + Docker Compose | ✅ installato |
-| LLM runtime | Ollama con backend ROCm | da fare |
+| Livello | Componente | Scelta | Stato |
+|---|---|---|---|
+| OS | WSL2 su Windows | ✅ in uso |
+| Driver GPU | NVIDIA CUDA (via WSL2 passthrough) | ✅ funzionante |
+| Container | Docker Desktop + Docker Compose | ✅ funzionante |
+| ASR | openai-whisper (PyTorch puro, no CTranslate2) | ✅ funzionante |
+| Diarizzazione | pyannote.audio 3.3.2 | ✅ funzionante |
+| LLM runtime | Ollama con backend CUDA | da fare |
 | LLM principale | Qwen 2.5 7B Instruct Q4_K_M (multilingua, buon italiano) | da fare |
-| ASR | WhisperX (large-v3) con backend ROCm | da fare |
-| Diarizzazione | pyannote.audio 3.x | da fare |
 | Embeddings | BGE-M3 (multilingua, ottimo italiano) via sentence-transformers | da fare |
 | Reranker | bge-reranker-v2-m3 | da fare |
 | Vector DB | ChromaDB persistente | da fare |
@@ -102,40 +101,48 @@ Opzione ibrida concordata:
 
 ### ✅ Fase 0 — Setup sistema (COMPLETATA)
 
-- [x] Ubuntu 24.04 LTS installato in dual boot
-- [x] Apt update/upgrade + pacchetti base
-- [x] ROCm 7.2.2 installato (via `amdgpu-install --usecase=rocm --no-dkms`, senza `graphics`)
-  - Gotcha risolto: il repo `graphics/7.2.2` non esiste per ROCm 7.2.2, l'installer lo aggiungeva in `rocm.list`. Rimosso con `sed -i '/graphics\/7.2.2/d' /etc/apt/sources.list.d/rocm.list`
-- [x] Utente nei gruppi `render, video`
-- [x] Riavvio effettuato
-- [x] Verifica: `rocminfo` mostra gfx1200, `rocm-smi` mostra GPU sana
-- [x] Docker + Docker Compose installati
-- [x] Test `docker run --rm --device=/dev/kfd --device=/dev/dri ... rocminfo` OK
-- [x] Python venv in `~/forensic-rag/.venv`
+- [x] WSL2 su Windows configurato
+- [x] Driver NVIDIA CUDA funzionanti via WSL2 passthrough
+- [x] Docker Desktop installato e accessibile da WSL2
 - [x] Struttura cartelle progetto creata
-- [x] PyTorch ROCm testato sull'host: `torch.cuda.is_available() == True`, matmul GPU OK
+- [x] Dockerfile whisper con dual-backend (cuda/rocm), branch cuda attivo
+- [x] docker-compose.yml configurato per NVIDIA GPU
+- [x] .env con GPU_BACKEND=cuda
 
-### 🔜 Fase 1 — Pipeline di trascrizione (PROSSIMA)
+### ✅ Fase 1 — Pipeline di trascrizione (COMPLETATA per il prototipo)
 
-Obiettivo: WhisperX + pyannote in container Docker, input audio italiano multi-speaker, output JSON strutturato `{speaker, start, end, text}`.
+Obiettivo raggiunto: WhisperX (openai-whisper puro) + pyannote in container Docker, input audio italiano multi-speaker, output JSON strutturato `{speaker, start, end, text}`.
 
-**Da fare:**
-- [ ] Dockerfile per container whisper con backend ROCm
-- [ ] Test con audio pubblico italiano (es. audizione parlamentare, 5-10 min)
-- [ ] Verifica qualità trascrizione (target WER < 5% su audio pulito)
-- [ ] Verifica qualità diarizzazione (speaker identificati correttamente)
-- [ ] Script helper per mappare `SPEAKER_00` → nomi reali
-- [ ] Test su audio più lungo (1 ora) con 2-4 speaker
-- [ ] Output JSON strutturato salvato in `data/transcripts/`
+- [x] Dockerfile per container whisper con backend CUDA
+- [x] Test con audio pubblico italiano (colloquio psicologico YouTube, 16 min, 2 speaker)
+- [x] Output JSON strutturato salvato in `data/transcripts/test.json`
+- [x] Qualità trascrizione: buona su audio pulito (valutazione visiva — WER formale da fare)
+- [x] Diarizzazione: 2 speaker identificati correttamente, qualche segmento UNKNOWN su transizioni rapide
+- [x] Script helper `scripts/transcribe.sh` per invocare il container (gestisce video, path assoluti/relativi, errori chiari)
+- [x] Caching modelli: Whisper → `models/whisper_cache`, pyannote → `models/hf_cache` (download una tantum)
+- [x] Pulizia Docker: immagine ROCm eliminata, build cache azzerata (~45GB recuperati)
+- [ ] Script per mappare SPEAKER_00 → nomi reali (da fare, basso impatto)
+- [ ] Test su audio più lungo con 2-4 speaker
+- [ ] WER formale su audio con ground truth
 
-**Caveat noti:**
-- `faster-whisper` (CTranslate2) su ROCm è acerbo. Piani B: `openai-whisper` puro con PyTorch+ROCm, o `whisper.cpp` con HIPBLAS (ROCm ufficiale, più stabile su AMD)
-- `HIP_VISIBLE_DEVICES=0` obbligatorio per escludere iGPU
-- Possibile `HSA_OVERRIDE_GFX_VERSION=12.0.0` se PyTorch non riconosce gfx1200
+**Note sulla qualità attuale:**
+- Un errore di speaker swap rilevato su transizione rapida (~108s): pyannote confonde brevemente i due speaker
+- Segmenti UNKNOWN = transizioni dove la sovrapposizione è sotto il threshold 0.3 in `align.py`
+- `faster-whisper` (CTranslate2) NON è in uso — si usa `openai-whisper` puro con PyTorch+CUDA, più stabile
 
-### Fase 2 — Indice caso corrente
+### 🔜 Fase 2 — Indice caso corrente (PROSSIMA)
 
 Solo indice C prima. Chunker per trascrizioni e atti, metadati ricchi, ChromaDB+BM25, retrieval semplice. Test su caso finto.
+
+**Da fare:**
+- [ ] Chunker per trascrizioni (input: JSON da pipeline, output: chunk con metadati speaker/timestamp)
+- [ ] Chunker per atti PDF/DOCX (input: documento, output: chunk per sezione/paragrafo)
+- [ ] Setup ChromaDB persistente in Docker
+- [ ] Setup BM25 (rank_bm25) per keyword search
+- [ ] Retrieval ibrido (BM25 + semantic) con scoring combinato
+- [ ] BGE-M3 come embedder
+- [ ] Test su caso finto: 1 trascrizione + 2-3 atti inventati
+- [ ] 10 domande di eval sul caso finto con risposta attesa
 
 ### Fase 3 — Estrazione fatti strutturati
 
@@ -155,7 +162,7 @@ Verificatore fuzzy, UI minima con citazioni cliccabili.
 
 ### Fase 7 — Migrazione produzione (futura)
 
-Docker compose su hardware nuovo (probabile NVIDIA). Strato di anonimizzazione per dati Zona Gialla. LLM cloud EU (Mistral Le Plateforme, Bedrock EU, o GPU dedicata Scaleway/OVH/Hetzner).
+Docker compose su hardware nuovo (probabile NVIDIA dedicato). Strato di anonimizzazione per dati Zona Gialla. LLM cloud EU (Mistral Le Plateforme, Bedrock EU, o GPU dedicata Scaleway/OVH/Hetzner).
 
 ## Struttura progetto
 
@@ -166,47 +173,49 @@ Docker compose su hardware nuovo (probabile NVIDIA). Strato di anonimizzazione p
 ├── .gitignore
 ├── docker-compose.yml
 ├── docker/
-│   ├── base-rocm/           # immagine base GPU AMD
-│   ├── base-cuda/           # immagine base GPU NVIDIA (futura)
-│   ├── whisper/
-│   ├── ollama/
-│   ├── api/
-│   └── ui/
+│   └── whisper/
+│       ├── Dockerfile        # dual-backend cuda/rocm, branch cuda attivo
+│       └── requirements.txt
 ├── src/
-│   ├── ingestion/           # parser, chunker per tipo documento
-│   ├── retrieval/           # retrieval ibrido + reranker
-│   ├── extraction/          # estrazione fatti strutturati
-│   ├── router/              # router di query
-│   ├── api/                 # FastAPI
-│   └── ui/                  # Streamlit
+│   ├── transcription/
+│   │   ├── pipeline.py       # entry point: whisper + pyannote + align
+│   │   └── align.py          # fusione segmenti whisper + turni pyannote
+│   ├── ingestion/            # parser, chunker per tipo documento (da fare)
+│   ├── retrieval/            # retrieval ibrido + reranker (da fare)
+│   ├── extraction/           # estrazione fatti strutturati (da fare)
+│   ├── router/               # router di query (da fare)
+│   ├── api/                  # FastAPI (da fare)
+│   └── ui/                   # Streamlit (da fare)
 ├── data/
-│   ├── raw_audio/           # gitignored
-│   ├── raw_docs/            # gitignored
-│   ├── transcripts/         # gitignored
-│   └── processed/           # gitignored
+│   ├── raw_audio/            # gitignored
+│   ├── raw_docs/             # gitignored
+│   ├── transcripts/          # gitignored (test.json presente)
+│   └── processed/            # gitignored
 ├── indexes/
-│   ├── chroma/              # gitignored
-│   └── bm25/                # gitignored
+│   ├── chroma/               # gitignored
+│   └── bm25/                 # gitignored
 ├── models/                   # gitignored
+│   ├── hf_cache/             # modelli pyannote (HF_HOME, persistenti)
+│   └── whisper_cache/        # modello Whisper large-v3 (~3GB, persistente)
 ├── configs/
+├── docs/
+│   └── guida_trascrizione.md # guida uso pipeline
 ├── scripts/
+│   └── transcribe.sh         # wrapper docker compose run whisper
 ├── notebooks/
 └── eval/                     # eval set di domande con risposta attesa
 ```
 
-## Variabili d'ambiente decise (.env)
+## Variabili d'ambiente (.env)
 
 ```
-# GPU backend: 'rocm' for AMD, 'cuda' for NVIDIA
-GPU_BACKEND=rocm
-GPU_DEVICE=cuda  # PyTorch device name (always 'cuda' even on ROCm)
+# GPU backend: 'cuda' per NVIDIA
+GPU_BACKEND=cuda
 
-# ROCm specific (AMD only)
-HIP_VISIBLE_DEVICES=0
-ROCR_VISIBLE_DEVICES=0
-HSA_OVERRIDE_GFX_VERSION=12.0.0  # se serve per gfx1200
+# HuggingFace token (richiesto da pyannote/speaker-diarization-3.1)
+HF_TOKEN=...
 
-# Model config (tune per machine)
+# Model config
 LLM_MODEL=qwen2.5:7b-instruct-q4_K_M
 LLM_GPU_LAYERS=32
 WHISPER_MODEL=large-v3
@@ -221,25 +230,30 @@ MODEL_CACHE=./models
 
 ## Valori decisi da non rimettere in discussione
 
-- Python 3.12
-- PyTorch con index ROCm 6.2 (retrocompatibile con ROCm 7.2 a sistema)
+- Python 3.11 nel container (3.12 sull'host se serve)
+- PyTorch CUDA via index `cu124`
+- openai-whisper (PyTorch puro) — NO faster-whisper/CTranslate2 per ora
 - LlamaIndex (non LangChain) come framework RAG
 - ChromaDB (non Pinecone/Weaviate cloud) per vector store
 - SQLite (non Postgres) per fact extraction nel prototipo
 - BGE-M3 come embedder, bge-reranker-v2-m3 come reranker
 - Qwen 2.5 7B come LLM principale del prototipo (Llama 3.1 8B come fallback)
-- WhisperX come primary, whisper.cpp come fallback se ROCm dà problemi
 - Streamlit come UI prototipo (non Gradio, non React)
 - FastAPI come backend
 
 ## Valutazione
 
-Prima di scrivere il primo chunker, costruire un **eval set**: 50 domande con risposta attesa, etichettate per tipo (fattuale/analogica/normativa/contraddittoria/cronologica), con chunk sorgente atteso. Necessario per sapere se ogni modifica migliora o peggiora il sistema. Costruito con materiale pubblico (sentenze Italgiure + codici Normattiva + caso finto inventato).
+Prima di scrivere il primo chunker, costruire un **eval set**: domande con risposta attesa, etichettate per tipo (fattuale/analogica/normativa/contraddittoria/cronologica), con chunk sorgente atteso. Necessario per sapere se ogni modifica migliora o peggiora il sistema. Costruito con materiale pubblico (sentenze Italgiure + codici Normattiva + caso finto inventato).
 
 ## Note operative e "lezioni apprese" finora
 
-- L'installer `amdgpu-install` 7.2.2 aggiunge un repo fantasma `graphics/7.2.2` dentro `rocm.list`. Va rimosso prima di procedere
-- Per la 9060 XT usare `--usecase=rocm` **senza** `graphics` — il driver grafico è già nel kernel mainline
-- `--no-dkms` obbligatorio con kernel mainline recente
-- Ryzen 7700 ha iGPU che ROCm vede come Device 1 — sempre escluderla con `HIP_VISIBLE_DEVICES=0`
-- PyTorch ROCm 6.2 wheel è più stabile di 7.x per ora, gira comunque sopra ROCm 7.2 host
+- **AMD RX 9060 XT (gfx1200, RDNA4) non supportata da ROCm** — PyTorch ROCm fa sempre fallback su CPU. Motivo del cambio macchina.
+- **WSL2 + NVIDIA:** CUDA funziona tramite passthrough driver Windows. Docker Desktop gestisce le GPU reservation (`driver: nvidia, capabilities: [gpu]`).
+- **openai-whisper su CUDA:** `fp16=True` quando device è cuda — obbligatorio per stare nei limiti VRAM della GTX 1050.
+- **pyannote/speaker-diarization-3.1** richiede HF_TOKEN e accettazione esplicita dei termini sul sito HuggingFace (una volta sola per account).
+- **huggingface-hub:** pyannote 3.3.2 usa ancora `use_auth_token` deprecato — vincolo `huggingface-hub>=0.20.0,<0.23.0` nel requirements.txt per evitare breaking change.
+- **numpy<2.0** obbligatorio — pyannote non è ancora compatibile con numpy 2.x.
+- **Segmenti UNKNOWN in align.py:** prodotti quando la sovrapposizione Whisper/pyannote è < 0.3 del segmento. Normale su transizioni rapide o voci sovrapposte.
+- **Caching modelli:** openai-whisper usa `~/.cache/whisper` di default (non rispetta `HF_HOME`). Passare `download_root` esplicitamente a `whisper.load_model()` e montare un volume dedicato `models/whisper_cache:/app/whisper_cache`.
+- **Docker e spazio su disco:** ogni rebuild accumula build cache e immagini orfane. Dopo cambi significativi: `docker builder prune -f` e `docker image prune`. L'immagine `forensic-rag/whisper:cuda` pesa ~9-10GB (PyTorch+CUDA) — è normale.
+- **models/ owned da root:** Docker crea le directory dei bind mount come root. Se serve scrivere dall'host: `sudo chown -R $USER:$USER models/`.

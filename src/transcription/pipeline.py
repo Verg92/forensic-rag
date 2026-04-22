@@ -137,7 +137,8 @@ def transcribe(
         return segments
 
     log.info(f"Carico modello Whisper '{model_name}' su {device}...")
-    model = whisper.load_model(model_name, device=device)
+    whisper_cache = os.environ.get("WHISPER_CACHE", "/app/whisper_cache")
+    model = whisper.load_model(model_name, device=device, download_root=whisper_cache)
 
     log.info(f"Trascrivo '{audio_path}' (lingua: {language})...")
     t0 = time.time()
