@@ -132,11 +132,99 @@ Se il processo viene interrotto dopo la trascrizione ma prima della diarizzazion
 
 # Parte 2 — Ingestion documenti
 
+## Come funziona il sistema — due momenti distinti
+
+Il sistema lavora in due fasi separate, e capire questa distinzione spiega perché i comandi hanno argomenti diversi.
+
+**Momento 1 — Ingest** (`ingest.sh`): legge i file dal disco e li carica nel database. Ha bisogno di sapere dove stanno i file → vuole un **path di cartella**.
+
+**Momento 2 — Tutto il resto** (`extract.sh`, `query.sh`, `ask.sh`, `facts.sh`): lavora esclusivamente sul database, non tocca più i file originali. Non sa niente di cartelle o path → vuole solo il **nome del caso** (`caso_id`) per filtrare i dati nel database.
+
+```
+FILESYSTEM                          DATABASE (indexes/)
+──────────────────────              ─────────────────────────────────────
+data/raw_docs/caso_001/             ChromaDB: chunk con caso_id="caso_001"
+  perizia.txt            →ingest→   BM25:     chunk con caso_id="caso_001"
+  verbale.txt                       SQLite:   fatti con caso_id="caso_001"
+  udienza.json
+       ↑
+  dopo l'ingest
+  questi file non
+  servono più al sistema
+```
+
+### Dove vivono i dati — tre database locali
+
+Tutti dentro `indexes/`, tutto locale, niente esce dalla macchina.
+
+| Database | Path | Cosa contiene | Dimensione tipica |
+|---|---|---|---|
+| ChromaDB | `indexes/chroma/` | vettori embedding + testo chunk + metadati | ~50-100 MB per caso |
+| BM25 | `indexes/bm25/index.pkl` | indice keyword + testo + metadati | ~5-10 MB |
+| SQLite | `indexes/facts.db` | fatti strutturati (solo dopo `extract.sh`) | ~1-2 MB |
+
+Per verificare lo spazio occupato:
+```bash
+du -sh indexes/
+```
+
+---
+
+### Perché tre database diversi — a cosa serve ciascuno
+
+**ChromaDB — ricerca per significato**
+
+Quando indicizzi un documento, il testo viene prima spezzato in pezzi (chunk) e poi ogni pezzo viene trasformato in un vettore numerico da BGE-M3 — un elenco di ~1000 numeri che rappresenta il "significato" di quel testo nello spazio semantico. ChromaDB salva sia il testo originale del chunk che il suo vettore.
+
+Quando cerchi "il bambino ha problemi relazionali", il sistema trasforma anche la domanda in un vettore e cerca i chunk il cui vettore è matematicamente vicino. Questo permette di trovare testi che parlano della stessa cosa con parole diverse: "difficoltà nell'interazione sociale" o "deficit nelle relazioni interpersonali" vengono trovati anche se non contengono le parole esatte della domanda.
+
+Il limite: non distingue bene nomi propri, date, numeri, termini tecnici specifici.
+
+**BM25 — ricerca per parole chiave**
+
+È il motore di ricerca classico (lo stesso usato dai motori di ricerca prima del machine learning). Cerca i chunk che contengono esattamente le parole della domanda, pesando la frequenza e la rarità di ogni parola nel corpus.
+
+Quando cerchi "Dott.ssa Conti" o "parent training" o "articolo 337-ter", BM25 li trova con precisione — mentre la ricerca semantica potrebbe confondersi perché nomi propri e termini tecnici hanno un significato "piatto" nello spazio vettoriale.
+
+Il limite: non capisce sinonimi o riformulazioni.
+
+**Perché usarli insieme**
+
+I due sistemi si compensano. `query.sh` e `ask.sh` li eseguono in parallelo e combinano i risultati con una formula (Reciprocal Rank Fusion): i chunk che risultano rilevanti in entrambe le ricerche scalano in cima. Questo è il "retrieval ibrido" — più robusto di ciascuno dei due da solo.
+
+**SQLite — fatti strutturati**
+
+ChromaDB e BM25 restituiscono pezzi di testo — sei tu (o il LLM) a dover leggere e interpretare. SQLite contiene invece fatti già estratti e classificati: `[scadenza] padre: avviare parent training`, `[diagnosi] bambino: DSA`.
+
+Serve per domande strutturate che il RAG gestisce male:
+- "Quali scadenze ci sono in questo caso?" → `facts.sh caso_001 scadenza`
+- "Cosa è stato diagnosticato al bambino?" → `facts.sh caso_001 diagnosi bambino`
+- "Quali raccomandazioni ha fatto la perizia?" → `facts.sh caso_001 raccomandazione`
+
+Con il RAG dovresti sapere già cosa cercare per trovarlo. Con SQLite puoi esplorare per categoria.
+
+Quindi i comandi si usano così:
+
+```bash
+# Ingest: vuole il path (legge dal disco)
+./scripts/ingest.sh data/raw_docs/caso_001/
+
+# Tutti gli altri: vogliono il nome del caso (leggono dal database)
+./scripts/extract.sh caso_001
+./scripts/query.sh "domanda" 5 caso_001
+./scripts/ask.sh "domanda" caso_001
+./scripts/facts.sh caso_001
+```
+
+Il `caso_id` è semplicemente il nome che hai dato alla cartella — diventa il tag con cui tutti i dati di quel caso vengono etichettati nel database.
+
+---
+
 ## Cosa fa
 
-Prende un documento (TXT, PDF, DOCX) o una trascrizione JSON, lo spezza in pezzi (chunk), calcola gli embedding con BGE-M3 e li salva in ChromaDB + BM25. Dopo l'ingestion il documento è interrogabile tramite `query.sh` e `ask.sh`.
+Prende un documento (TXT, PDF, DOCX) o una trascrizione JSON, lo spezza in pezzi (chunk), calcola gli embedding con BGE-M3 e li salva in ChromaDB + BM25. Dopo l'ingest il documento è interrogabile tramite `query.sh` e `ask.sh`.
 
-I dati indicizzati (vettori, testo, metadati) vengono scritti in `indexes/` e ci restano finché non li cancelli esplicitamente. Non si perdono tra un avvio e l'altro del container.
+I dati indicizzati vengono scritti in `indexes/` e ci restano finché non li cancelli esplicitamente. Non si perdono tra un avvio e l'altro del container.
 
 ---
 
@@ -455,5 +543,114 @@ Le citazioni `[FONTE N]` corrispondono alla lista numerata sotto. Puoi verificar
 
 - Se la risposta dice "l'informazione non è presente", prima di preoccuparti esegui `query.sh` con le stesse parole chiave: se i chunk giusti ci sono, il problema è la formulazione della domanda o il `top_k` troppo basso
 - Aumenta `top_k` a 8-10 se la risposta sembra tagliata o dice che non ha abbastanza informazioni
-- Il LLM (Qwen 3B) è un modello piccolo: per domande complesse o molto specifiche può essere impreciso — verifica sempre sulle fonti citate
+- Il LLM (Qwen 7B) può essere impreciso su domande molto specifiche — verifica sempre sulle fonti citate
 - La prima risposta dopo l'avvio di Ollama può essere lenta (~60s); le successive sono più rapide
+
+---
+
+---
+
+# Parte 5 — Fatti strutturati (estrazione e consultazione)
+
+## Perché esiste, in aggiunta al RAG
+
+`ask.sh` risponde bene a domande aperte ("cosa dice la perizia sul padre?"), ma è impreciso su domande strutturate come "quali scadenze ci sono?" o "quando è stata fatta la diagnosi?" — perché deve indovinare quali chunk cercare e sintetizzare testo libero.
+
+La Parte 5 affianca il RAG con un database strutturato: dopo l'ingest, un LLM analizza ogni chunk e ne estrae fatti atomici (scadenze, diagnosi, terapie, raccomandazioni...) salvandoli in SQLite. Da quel momento puoi interrogare i fatti direttamente, con filtri precisi.
+
+---
+
+## Workflow
+
+```bash
+# 1. Indicizza i documenti (Parte 2)
+./scripts/ingest.sh data/raw_docs/caso_001/
+
+# 2. Estrai i fatti strutturati (una volta sola, o dopo nuovi documenti)
+./scripts/extract.sh caso_001
+
+# 3. Consulta i fatti
+./scripts/facts.sh caso_001
+./scripts/facts.sh caso_001 scadenza
+./scripts/facts.sh caso_001 diagnosi bambino
+```
+
+I comandi 2 e 3 usano il nome del caso (`caso_001`), non un path — perché lavorano sul database, non sui file originali (vedi la spiegazione dei due momenti in Parte 2).
+
+---
+
+## extract.sh — estrazione fatti
+
+```bash
+./scripts/extract.sh <caso_id> [--dry-run]
+```
+
+Legge tutti i chunk di quel caso da ChromaDB, li passa uno per uno a Ollama, e salva i fatti estratti in `indexes/facts.db` (SQLite).
+
+**Tipi di fatto estratti:** `affermazione`, `negazione`, `ammissione`, `opinione`, `scadenza`, `raccomandazione`, `diagnosi`, `terapia`
+
+**Attenzione ai tempi:** ogni chunk richiede una chiamata a Ollama. Con 87 chunk e il modello 7B su GTX 1050 Ti, aspettati 15-20 minuti. L'estrazione si fa una volta sola per caso (o dopo aver aggiunto nuovi documenti).
+
+### --dry-run
+
+```bash
+./scripts/extract.sh caso_001 --dry-run
+```
+
+Chiama comunque Ollama e mostra i fatti estratti a schermo, **senza scrivere nulla su SQLite**. Serve per verificare che il LLM stia estraendo cose sensate prima di popolare il database. Se l'output è sbagliato puoi correggere il prompt e riprovare senza aver sporcato il DB.
+
+Esempio di output dry-run:
+```
+[caso_001_verbale_udienza_001] verbale_udienza → 2 fatti
+  [scadenza] padre: avviare parent training entro 30 giorni dall'udienza
+  [raccomandazione] madre: parent training per ridurre comportamenti iperprotettivi
+
+[caso_001_perizia_psicologica_003] perizia_psicologica → 1 fatto
+  [diagnosi] bambino: DSA diagnosticato
+```
+
+---
+
+## facts.sh — consultazione fatti
+
+```bash
+./scripts/facts.sh <caso_id> [tipo] [soggetto]
+```
+
+| Argomento | Obbligatorio | Descrizione |
+|---|---|---|
+| `<caso_id>` | sì | Nome del caso nel database |
+| `[tipo]` | no | Filtra per tipo: `scadenza` `diagnosi` `terapia` `raccomandazione` ecc. |
+| `[soggetto]` | no | Filtra per soggetto (es: `padre` `madre` `bambino`) |
+
+**Esempi:**
+
+```bash
+# Tutti i fatti del caso
+./scripts/facts.sh caso_001
+
+# Solo le scadenze
+./scripts/facts.sh caso_001 scadenza
+
+# Diagnosi relative al bambino
+./scripts/facts.sh caso_001 diagnosi bambino
+
+# Tutto quello che riguarda il padre
+./scripts/facts.sh caso_001 "" padre
+```
+
+Esempio di output:
+```
+============================================================
+  Caso: caso_001  |  tipo: scadenza
+  Totale: 2 fatti
+============================================================
+
+────────────────────────────────────────────────────────────
+  SCADENZA (2)
+────────────────────────────────────────────────────────────
+  • padre: avviare parent training  [entro 30 giorni dall'udienza]
+    ↳ verbale: verbale_udienza
+  • padre: depositare conferma scritta in cancelleria  [entro 30 giorni]
+    ↳ verbale: verbale_udienza
+```
