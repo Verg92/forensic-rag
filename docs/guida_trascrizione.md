@@ -33,28 +33,29 @@ Non serve estrarre l'audio manualmente — basta passare il file video direttame
 ## Comando
 
 ```bash
-./scripts/transcribe.sh <file> [num_speakers]
+./scripts/transcribe.sh <file> <caso_id> [num_speakers]
 ```
 
 | Argomento | Obbligatorio | Descrizione |
 |---|---|---|
-| `<file>` | sì | Path del file audio o video, relativo alla root del progetto |
+| `<file>` | sì | Path del file audio o video, dentro `data/raw_audio/` |
+| `<caso_id>` | sì | Identificatore del caso — il JSON finisce direttamente in `data/raw_docs/<caso_id>/` |
 | `[num_speakers]` | no | Numero di persone che parlano — se lo sai, specificalo: migliora la diarizzazione |
 
 **Esempi:**
 
 ```bash
 # Audio, speaker non noti (pyannote li rileva in automatico)
-./scripts/transcribe.sh data/raw_audio/colloquio.wav
+./scripts/transcribe.sh data/raw_audio/colloquio.wav caso_001
 
 # Video con 2 speaker noti
-./scripts/transcribe.sh data/raw_audio/udienza.mp4 2
+./scripts/transcribe.sh data/raw_audio/udienza.mp4 caso_001 2
 
 # Audio con 3 speaker noti
-./scripts/transcribe.sh data/raw_audio/udienza_marzo.mp3 3
+./scripts/transcribe.sh data/raw_audio/udienza_marzo.mp3 caso_001 3
 ```
 
-L'output va automaticamente in `data/transcripts/<nome_file>.json`.
+L'output va automaticamente in `data/raw_docs/<caso_id>/<nome_file>.json` — già nella cartella giusta per l'ingest, senza spostamenti manuali.
 
 ---
 
@@ -133,56 +134,122 @@ Se il processo viene interrotto dopo la trascrizione ma prima della diarizzazion
 
 ## Cosa fa
 
-Prende un documento (TXT, PDF, DOCX) o una trascrizione JSON, lo spezza in pezzi (chunk), calcola gli embedding con BGE-M3 e li salva in ChromaDB + BM25. Dopo l'ingestion il documento è interrogabile.
+Prende un documento (TXT, PDF, DOCX) o una trascrizione JSON, lo spezza in pezzi (chunk), calcola gli embedding con BGE-M3 e li salva in ChromaDB + BM25. Dopo l'ingestion il documento è interrogabile tramite `query.sh` e `ask.sh`.
+
+I dati indicizzati (vettori, testo, metadati) vengono scritti in `indexes/` e ci restano finché non li cancelli esplicitamente. Non si perdono tra un avvio e l'altro del container.
 
 ---
 
 ## Prerequisiti
 
 - Container ingestion buildato: `docker compose build ingestion`
-- Directory `indexes/` presente (creata automaticamente)
+
+---
+
+## Struttura cartelle — come organizzare i casi
+
+Ogni caso ha una cartella dedicata dentro `data/raw_docs/`. Il nome della cartella diventa automaticamente il `caso_id`.
+
+```
+data/
+  raw_audio/                        ← audio/video da trascrivere
+  raw_docs/
+    caso_001/                       ← tutti i file del caso 001 (docs + trascrizioni)
+      perizia_psicologica.txt       ← copiato a mano
+      verbale_udienza.txt           ← copiato a mano
+      relazione_ctu.docx            ← copiato a mano
+      udienza_marzo.json            ← generato da transcribe.sh direttamente qui
+    caso_002/                       ← caso diverso, indice separato
+      perizia.txt
+      verbale.txt
+```
+
+Tutte queste cartelle sono in `.gitignore` — i tuoi documenti non vengono mai committati su git.
+
+### Come si chiama il caso_id?
+
+È il **nome della cartella** — niente di più. Quando cerchi con `query.sh "domanda" 5 caso_001`, il sistema restituisce solo i chunk che provengono da quella cartella. Se hai un solo caso puoi anche non specificarlo e il sistema cerca su tutto.
+
+Non esiste un registro centrale dei casi: il `caso_id` vive come metadato su ogni chunk dentro `indexes/`. Se vuoi sapere quali casi hai indicizzato, devi ricordartelo tu (o usare il comando di verifica qui sotto).
+
+### Come si chiama il tipo_atto?
+
+Viene ricavato **automaticamente dal nome del file** — non devi specificarlo. La regola è semplice: se il nome del file inizia con una parola riconosciuta, quella diventa il tipo:
+
+| Nome file | Tipo rilevato |
+|---|---|
+| `perizia_psicologica.txt` | `perizia` |
+| `verbale_udienza.txt` | `verbale` |
+| `relazione_ctu.docx` | `relazione` |
+| `atto_nomina.pdf` | `atto` |
+| `sentenza_tribunale.txt` | `sentenza` |
+| `qualsiasi_altro_nome.txt` | `documento` |
+| `udienza.json` | `trascrizione` (sempre, per i .json) |
+
+Parole riconosciute: `perizia`, `verbale`, `relazione`, `atto`, `consulenza`, `sentenza`, `ordinanza`.
+
+Il tipo appare nelle citazioni delle risposte: `Perizia: perizia_psicologica`, `Verbale: verbale_udienza`. È solo un'etichetta leggibile — il sistema non ci fa nessuna logica sopra.
+
+### Le trascrizioni
+
+`transcribe.sh` salva automaticamente i JSON in `data/transcripts/`. Per includerle nell'indice di un caso, **copiale nella cartella del caso** prima di fare ingest:
+
+```bash
+cp data/transcripts/udienza_marzo.json data/raw_docs/caso_001/
+```
 
 ---
 
 ## Comando
 
 ```bash
+# Indicizza tutta la cartella di un caso (modo consigliato)
+./scripts/ingest.sh data/raw_docs/caso_001/
+
+# Indicizza un file singolo (caso_id e tipo_atto espliciti)
+./scripts/ingest.sh data/raw_docs/perizia.txt caso_001 perizia
+```
+
+### Modalità cartella
+
+```bash
+./scripts/ingest.sh data/raw_docs/caso_001/
+```
+
+- `caso_id` = nome della cartella (`caso_001`)
+- `tipo_atto` = rilevato dal nome file (vedi tabella sopra)
+- Processa tutti i file nella cartella in sequenza
+- Aggiunge i chunk all'indice senza cancellare quelli già presenti
+
+### Modalità file singolo
+
+```bash
 ./scripts/ingest.sh <file> <caso_id> [tipo_atto]
 ```
 
-| Argomento | Obbligatorio | Descrizione |
-|---|---|---|
-| `<file>` | sì | Path del file da indicizzare, relativo alla root del progetto |
-| `<caso_id>` | sì | Identificatore del caso, es. `caso_001`. Usato per filtrare le ricerche. Usa sempre lo stesso ID per tutti i documenti dello stesso caso |
-| `[tipo_atto]` | no (default: `documento`) | Etichetta del tipo di documento: `perizia` `verbale` `relazione` `atto` ecc. Ignorato per le trascrizioni JSON |
-
-**Esempi:**
-
-```bash
-# Indicizza una perizia
-./scripts/ingest.sh data/raw_docs/perizia.txt caso_001 perizia
-
-# Indicizza un verbale
-./scripts/ingest.sh data/raw_docs/verbale_udienza.txt caso_001 verbale
-
-# Indicizza una trascrizione (tipo_atto viene ignorato, rilevato dal .json)
-./scripts/ingest.sh data/transcripts/udienza.json caso_001
-
-# Secondo caso — stesso sistema, caso_id diverso
-./scripts/ingest.sh data/raw_docs/perizia_rossi.txt caso_002 perizia
-```
+- `caso_id` obbligatorio (non può essere ricavato dal path)
+- `tipo_atto` opzionale: se omesso viene rilevato dal nome file, altrimenti `documento`
+- Utile per aggiungere un documento a un caso già indicizzato
 
 ---
 
-## Dove mettere i file
+## Workflow tipico per un nuovo caso
 
-| Tipo | Cartella |
-|---|---|
-| Audio/video da trascrivere | `data/raw_audio/` |
-| Documenti (PDF, TXT, DOCX) | `data/raw_docs/` |
-| Trascrizioni prodotte | `data/transcripts/` (generate automaticamente) |
+```bash
+# 1. Crea la cartella del caso e copia i documenti scritti
+mkdir -p data/raw_docs/caso_001
+cp /percorso/perizia_psicologica.txt data/raw_docs/caso_001/
+cp /percorso/verbale_udienza.txt     data/raw_docs/caso_001/
 
-Tutte queste cartelle sono in `.gitignore` — i tuoi documenti non vengono mai committati su git.
+# 2. Trascrivi gli audio — il JSON va direttamente nella cartella del caso
+./scripts/transcribe.sh data/raw_audio/udienza.mp4 caso_001 2
+
+# 3. Indicizza tutto in un colpo
+./scripts/ingest.sh data/raw_docs/caso_001/
+
+# 4. Verifica
+./scripts/query.sh "test" 3 caso_001
+```
 
 ---
 
@@ -192,7 +259,7 @@ Utile per verificare che il chunker stia tagliando bene il documento prima di in
 
 ```bash
 docker compose run --rm ingestion \
-    --input /data/raw_docs/perizia.txt \
+    --input /data/raw_docs/caso_001/perizia_psicologica.txt \
     --caso-id caso_001 \
     --tipo-atto perizia \
     --dry-run

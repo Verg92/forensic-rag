@@ -1,44 +1,50 @@
 #!/usr/bin/env bash
-# Uso: ./scripts/transcribe.sh <file_audio> [num_speakers]
-# Esempio: ./scripts/transcribe.sh data/raw_audio/test.wav 3
+# Uso: ./scripts/transcribe.sh <file_audio> <caso_id> [num_speakers]
+# Esempio: ./scripts/transcribe.sh data/raw_audio/udienza.mp4 caso_001 2
+#
+# Output: data/raw_docs/<caso_id>/<nome_file>.json
+# Pronto per ingest: ./scripts/ingest.sh data/raw_docs/<caso_id>/
 
 set -euo pipefail
 
-# Spostati sempre nella root del progetto (cartella padre di scripts/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
 cd "${PROJECT_ROOT}"
 
-AUDIO_ARG="${1:?Argomento 1 richiesto: path audio}"
-NUM_SPEAKERS="${2:-}"
+AUDIO_ARG="${1:?Argomento 1 richiesto: path audio (dentro data/raw_audio/)}"
+CASO_ID="${2:?Argomento 2 richiesto: caso_id (es: caso_001)}"
+NUM_SPEAKERS="${3:-}"
 
-# Risolvi il path assoluto dell'audio sull'host
+# Risolvi path assoluto dell'audio
 if [[ "${AUDIO_ARG}" = /* ]]; then
     AUDIO_ABS="${AUDIO_ARG}"
 else
     AUDIO_ABS="${PROJECT_ROOT}/${AUDIO_ARG}"
 fi
 
-# Il volume Docker monta ./data → /data dentro il container.
-# Calcola il path dentro il container strippando il prefix della data dir host.
 DATA_DIR="${PROJECT_ROOT}/data"
 if [[ "${AUDIO_ABS}" != "${DATA_DIR}"/* ]]; then
     echo "ERRORE: il file deve trovarsi dentro ${DATA_DIR}/" >&2
     exit 1
 fi
-AUDIO_IN_CONTAINER="/data/${AUDIO_ABS#${DATA_DIR}/}"
 
+AUDIO_IN_CONTAINER="/data/${AUDIO_ABS#${DATA_DIR}/}"
 BASENAME=$(basename "${AUDIO_ABS%.*}")
-OUTPUT_IN_CONTAINER="/data/transcripts/${BASENAME}.json"
+
+# Output diretto nella cartella del caso
+OUTPUT_DIR="${PROJECT_ROOT}/data/raw_docs/${CASO_ID}"
+mkdir -p "${OUTPUT_DIR}"
+OUTPUT_IN_CONTAINER="/data/raw_docs/${CASO_ID}/${BASENAME}.json"
 
 SPEAKERS_ARG=""
 if [[ -n "${NUM_SPEAKERS}" ]]; then
     SPEAKERS_ARG="--num-speakers ${NUM_SPEAKERS}"
 fi
 
-echo "📼  Audio:   ${AUDIO_ABS}"
-echo "📄  Output:  ${PROJECT_ROOT}/data/transcripts/${BASENAME}.json"
-echo "🎤  Speaker: ${NUM_SPEAKERS:-auto-detect}"
+echo "Audio:    ${AUDIO_ABS}"
+echo "Caso:     ${CASO_ID}"
+echo "Output:   ${OUTPUT_DIR}/${BASENAME}.json"
+echo "Speaker:  ${NUM_SPEAKERS:-auto-detect}"
 echo ""
 
 docker compose run --rm whisper \
