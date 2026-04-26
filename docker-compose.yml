@@ -22,3 +22,39 @@ services:
       - ./src/transcription:/app/transcription
     profiles:
       - tools
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: docker/ingestion/Dockerfile
+    image: forensic-rag/ingestion:cpu
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      OLLAMA_URL: http://ollama:11434
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b-instruct-q4_K_M}
+    volumes:
+      - ./data:/data
+      - ./indexes:/indexes
+      - ./models/bge_cache:/app/model_cache/bge
+      - ./models/hf_cache:/app/model_cache/hf
+      - ./src/ingestion:/app/ingestion
+    depends_on:
+      - ollama
+    profiles:
+      - tools
+
+  ollama:
+    image: ollama/ollama:latest
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./models/ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    profiles:
+      - tools
