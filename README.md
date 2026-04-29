@@ -9,7 +9,7 @@ Sistema RAG locale per studio legale (psicologia forense + avvocatura). Privacy-
 - Windows 10/11 (64-bit, build 19041 o successiva)
 - GPU NVIDIA con almeno 4 GB VRAM (consigliati 6–8 GB per modelli standard)
 - Driver NVIDIA aggiornati (≥ 525.x)
-- 20 GB di spazio libero (immagini Docker + modelli)
+- 100 GB di spazio libero (immagini Docker + modelli)
 
 ---
 
@@ -18,9 +18,8 @@ Sistema RAG locale per studio legale (psicologia forense + avvocatura). Privacy-
 Apri **PowerShell come amministratore** ed esegui:
 
 ```powershell
-wsl --install
+wsl --install Ubuntu-24.04
 ```
-
 Questo installa WSL2 con Ubuntu come distribuzione predefinita. Riavvia il PC quando richiesto.
 
 Al primo avvio di Ubuntu ti verrà chiesto di creare un utente e una password.
