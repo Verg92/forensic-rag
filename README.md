@@ -36,7 +36,11 @@ La colonna `VERSION` deve mostrare `2`. Se mostra `1`:
 wsl --set-default-version 2
 wsl --set-version Ubuntu 2
 ```
+Poi per aggiornare la distro:
 
+```bash
+sudo apt update && sudo apt upgrade
+```
 ---
 
 ## 2. Driver NVIDIA e CUDA via WSL2
