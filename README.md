@@ -219,3 +219,7 @@ forensic-rag/ingestion   cpu     ...   ~600MB
 ```
 
 Il sistema è pronto. Consulta `docs/guida_trascrizione.md` per i comandi operativi (trascrizione, ingestion, query).
+
+### 6. Su VSCode
+
+Installa l'estensione 'WSL'
